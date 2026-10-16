@@ -25,6 +25,7 @@ The frontend defaults to `http://localhost:8000` and uses:
 
 - `GET /api/customers/CUST-BLUEPEAK/context`
 - `GET /api/customers/CUST-BLUEPEAK/analysis`
+- `GET /api/customers/CUST-BLUEPEAK/sources/{source_id}` for a customer-scoped record and its graph provenance
 - `POST /api/customers/CUST-BLUEPEAK/ask/stream` for live SSE tool progress and the evidence-checked answer
 - `POST /api/customers/CUST-BLUEPEAK/draft-reply/stream` for an editable, source-backed draft that is never sent automatically
 

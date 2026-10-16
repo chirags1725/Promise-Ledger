@@ -160,6 +160,95 @@ def customer_analysis(customer_id: str) -> dict[str, Any]:
     }
 
 
+@app.get("/api/customers/{customer_id}/sources/{source_id}")
+def customer_source_detail(customer_id: str, source_id: str) -> dict[str, Any]:
+    """Return a safe, customer-scoped source record and connected provenance edges."""
+    context = customer_context(customer_id)
+    priority = next(
+        (event.get("case_priority") for event in context["sla_events"] if event.get("case_priority")),
+        "normal",
+    )
+    analysis = analyze_promises(context["promises"], case_priority=priority)
+
+    allowed_ids: set[str] = set()
+    if context.get("customer", {}).get("id"):
+        allowed_ids.add(str(context["customer"]["id"]))
+    for ticket in context.get("tickets", []):
+        if ticket.get("id"):
+            allowed_ids.add(str(ticket["id"]))
+    for path in context.get("bug_paths", []):
+        allowed_ids.update(str(path[key]) for key in ("ticket_id", "bug_id", "owner_id") if path.get(key))
+    for promise in context.get("promises", []):
+        allowed_ids.update(str(promise[key]) for key in ("id", "source_id", "depends_on_bug_id") if promise.get(key))
+    for promise in analysis.get("commitments", []):
+        allowed_ids.update(str(promise[key]) for key in ("id", "source_id", "depends_on_bug_id") if promise.get(key))
+    for event in context.get("sla_events", []):
+        allowed_ids.update(str(event[key]) for key in ("id", "case_id", "ticket_id", "contract_id") if event.get(key))
+
+    if source_id not in allowed_ids:
+        raise HTTPException(status_code=404, detail="Source record not found for this customer.")
+
+    source_rows = rows(
+        """
+        MATCH (n {id: $source_id})
+        RETURN labels(n), n.id, n.name, n.title, n.summary, n.text, n.excerpt,
+               n.evidence_excerpt, n.kind, n.status, n.source_ref, n.created_at,
+               n.occurred_at, n.due_at, n.target_at, n.confidence, n.severity,
+               n.role, n.team, n.priority, n.opened_at, n.segment
+        LIMIT 1
+        """,
+        {"source_id": source_id},
+    )
+    if not source_rows:
+        raise HTTPException(status_code=404, detail="Source record not found for this customer.")
+
+    record = source_rows[0]
+    columns = (
+        "id", "name", "title", "summary", "text", "excerpt", "evidence_excerpt", "kind", "status",
+        "source_ref", "created_at", "occurred_at", "due_at", "target_at", "confidence", "severity",
+        "role", "team", "priority", "opened_at", "segment",
+    )
+    values = dict(zip(columns, record[1:]))
+    labels = record[0] if isinstance(record[0], list) else [record[0]]
+    details = {key: value for key, value in values.items() if value is not None and key not in {"id", "title"}}
+    excerpt = next((values.get(key) for key in ("excerpt", "evidence_excerpt", "summary", "text") if values.get(key)), None)
+    title = next((values.get(key) for key in ("title", "name", "summary", "text") if values.get(key)), source_id)
+
+    edge_params = {"source_id": source_id, "allowed_ids": sorted(allowed_ids)}
+    outgoing_rows = rows(
+        """
+        MATCH (n {id: $source_id})-[r]->(m)
+        WHERE m.id IN $allowed_ids
+        RETURN n.id, type(r), m.id
+        LIMIT 20
+        """,
+        edge_params,
+    )
+    incoming_rows = rows(
+        """
+        MATCH (m)-[r]->(n {id: $source_id})
+        WHERE m.id IN $allowed_ids
+        RETURN m.id, type(r), n.id
+        LIMIT 20
+        """,
+        edge_params,
+    )
+    relationship_rows = (outgoing_rows + incoming_rows)[:40]
+    return {
+        "source": {
+            "id": source_id,
+            "label": next((str(label) for label in labels if label), "Record"),
+            "title": str(title),
+            "excerpt": excerpt,
+            "details": details,
+        },
+        "relationships": [
+            {"from_id": edge[0], "type": edge[1], "to_id": edge[2]}
+            for edge in relationship_rows
+        ],
+    }
+
+
 @app.post("/api/customers/{customer_id}/ask")
 def ask_customer(customer_id: str, request: AskRequest) -> dict[str, Any]:
     """Answer a case question using a LangGraph tool-calling agent."""

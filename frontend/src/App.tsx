@@ -29,6 +29,7 @@ import {
   UserRound,
   UsersRound,
   Workflow,
+  X,
 } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
@@ -74,6 +75,10 @@ type DraftResult = {
   draft: string; internal_evidence: string; internal_note: string; citations: string[];
   tools_used: string[]; grounded: boolean; checks_passed: boolean; warnings: string[];
   send_enabled: false;
+};
+type SourceDetail = {
+  source: { id: string; label: string; title: string; excerpt: string | null; details: Record<string, unknown> };
+  relationships: Array<{ from_id: string; type: string; to_id: string }>;
 };
 
 function formatDate(value?: string | null) {
@@ -148,6 +153,10 @@ function App() {
   const [draftResult, setDraftResult] = useState<DraftResult | null>(null);
   const [draftText, setDraftText] = useState('');
   const [copyMessage, setCopyMessage] = useState('');
+  const [sourceDetail, setSourceDetail] = useState<SourceDetail | null>(null);
+  const [sourceLoading, setSourceLoading] = useState(false);
+  const [sourceError, setSourceError] = useState('');
+  const [sourceOpen, setSourceOpen] = useState(false);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -168,6 +177,26 @@ function App() {
   }, []);
 
   useEffect(() => { void loadData(); }, [loadData]);
+
+  async function openSource(sourceId: string) {
+    setSourceOpen(true);
+    setSourceLoading(true);
+    setSourceError('');
+    setSourceDetail(null);
+    try {
+      const detail = await getJson<SourceDetail>(`/api/customers/${CUSTOMER_ID}/sources/${encodeURIComponent(sourceId)}`);
+      setSourceDetail(detail);
+    } catch (caught) {
+      setSourceError(caught instanceof Error ? caught.message : 'Could not load that source record.');
+    } finally {
+      setSourceLoading(false);
+    }
+  }
+
+  function closeSource() {
+    setSourceOpen(false);
+    setSourceError('');
+  }
 
   function handleProgressEvent(eventName: string, payload: Record<string, unknown>) {
     if (eventName === 'progress') setLiveStatus(String(payload.message || 'Investigating the case…'));
@@ -351,7 +380,7 @@ function App() {
             {agentResponse && <div className={`agent-answer ${agentResponse.grounded ? 'verified' : 'unverified'}`}>
               <div className="answer-heading"><span>{agentResponse.grounded ? <BadgeCheck size={15} /> : <AlertCircle size={15} />}{agentResponse.grounded ? 'EVIDENCE CHECK PASSED' : 'EVIDENCE NEEDS REVIEW'}</span><div>{agentResponse.tools_used.map((name) => <span className="tool-chip" key={name}>{name.replaceAll('_', ' ')}</span>)}</div></div>
               <p>{agentResponse.answer}</p>
-              {agentResponse.citations.length > 0 && <div className="citation-row"><span>VERIFIED SOURCES</span>{agentResponse.citations.map((id) => <span className="citation-chip" key={id}>{id}</span>)}</div>}
+              {agentResponse.citations.length > 0 && <div className="citation-row"><span>VERIFIED SOURCES</span>{agentResponse.citations.map((id) => <button className="citation-chip source-link" type="button" key={id} onClick={() => void openSource(id)}>{id}</button>)}</div>}
               {agentResponse.unsupported_citations.length > 0 && <div className="unsupported-row">Unverified IDs: {agentResponse.unsupported_citations.join(', ')}</div>}
               <div className="answer-foot">Tool calls are read-only. Any customer-facing action still requires human review.</div>
             </div>}
@@ -362,7 +391,7 @@ function App() {
             <div className="draft-only-notice"><ShieldAlert size={14} /><span>This is an editable local draft. It has <b>not</b> been sent or saved to a ticket.</span></div>
             <textarea className="draft-editor" value={draftText} onChange={(event) => editDraft(event.target.value)} rows={7} aria-label="Editable customer update draft" />
             <div className="draft-actions"><button className="secondary-button" onClick={() => void copyDraft()}><FileText size={14} /> Copy draft</button><button className="secondary-button" onClick={() => void prepareDraft()} disabled={asking}><RefreshCw size={14} className={asking ? 'spin' : ''} /> Regenerate</button><span>{copyMessage}</span></div>
-            {draftResult.citations.length > 0 && <div className="draft-evidence"><b>INTERNAL EVIDENCE — not part of the customer message</b><div>{draftResult.citations.map((id) => <span className="citation-chip" key={id}>{id}</span>)}</div></div>}
+            {draftResult.citations.length > 0 && <div className="draft-evidence"><b>INTERNAL EVIDENCE — not part of the customer message</b><div>{draftResult.citations.map((id) => <button className="citation-chip source-link" type="button" key={id} onClick={() => void openSource(id)}>{id}</button>)}</div></div>}
             {draftResult.internal_note && <div className="draft-internal-note"><b>Internal note</b><p>{draftResult.internal_note}</p></div>}
             {draftResult.warnings.length > 0 && <ul className="draft-warnings">{draftResult.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>}
           </section>}
@@ -374,7 +403,7 @@ function App() {
                 <div className="promise-rank">{String(index + 1).padStart(2, '0')}</div>
                 <div className="promise-main">
                   <div className="promise-title-row"><h3>{item.text}</h3><span className={`status-pill ${item.status}`}>{item.status === 'overdue' ? <Clock3 size={12} /> : <Check size={12} />}{humanize(item.status)}</span></div>
-                  <div className="promise-meta"><span><UserRound size={13} /> {item.made_by || 'Owner not recorded'}</span><span><CalendarClock size={13} /> Due {formatDate(item.due_at)}</span><span><FileText size={13} /> Source <b>{item.source_id || 'not linked'}</b></span></div>
+                  <div className="promise-meta"><span><UserRound size={13} /> {item.made_by || 'Owner not recorded'}</span><span><CalendarClock size={13} /> Due {formatDate(item.due_at)}</span><span><FileText size={13} /> Source {item.source_id ? <button type="button" className="inline-source-link" onClick={() => void openSource(item.source_id!)}>{item.source_id}</button> : <b>not linked</b>}</span></div>
                   {item.evidence_excerpt && <blockquote>“{item.evidence_excerpt}”</blockquote>}
                   <div className="followup-row"><span className={item.follow_up_open ? 'followup-open' : 'followup-closed'}>{item.follow_up_open ? <AlertCircle size={13} /> : <BadgeCheck size={13} />} Follow-up: {humanize(item.follow_up_status)}</span><span>{item.overdue_days.toFixed(1)} days overdue</span></div>
                 </div>
@@ -390,9 +419,9 @@ function App() {
               <div className="panel-heading"><div><div className="section-kicker">MULTI-HOP REASONING</div><h2>Connected evidence path</h2></div><GitBranch size={18} /></div>
               <div className="path-flow">
                 <div className="path-node customer-node"><span className="path-icon"><BriefcaseBusiness size={15} /></span><div><small>CUSTOMER</small><b>{context?.customer.name ?? 'Bluepeak Robotics'}</b></div></div><div className="path-connector"><span /><ArrowDownRight size={14} /></div>
-                <div className="path-node"><span className="path-icon"><FileText size={15} /></span><div><small>REPEAT SUPPORT HISTORY</small><b>{context?.tickets.length ?? '—'} related tickets</b><em>{context?.tickets.map((t) => t.id).join(' · ') || 'Waiting for API'}</em></div></div><div className="path-connector"><span /><ArrowDownRight size={14} /></div>
-                <div className="path-node"><span className="path-icon bug-icon"><Boxes size={15} /></span><div><small>SHARED PRODUCT ISSUE</small><b>{leadingBug?.bug_id ?? 'Bug not linked'}</b><em>{leadingBug?.bug_title ?? 'No connected bug evidence'}</em></div></div><div className="path-connector"><span /><ArrowDownRight size={14} /></div>
-                <div className="path-node owner-node"><span className="path-icon owner-icon"><UsersRound size={15} /></span><div><small>CURRENT ENGINEERING OWNER</small><b>{leadingBug?.owner_name ?? 'Not recorded'}</b><em>{leadingBug?.owner_id ?? ''}</em></div></div>
+                <div className="path-node"><span className="path-icon"><FileText size={15} /></span><div><small>REPEAT SUPPORT HISTORY</small><b>{context?.tickets.length ?? '—'} related tickets</b><em>{context?.tickets.map((t) => <button type="button" className="inline-source-link" key={t.id} onClick={() => void openSource(t.id)}>{t.id}</button>) || 'Waiting for API'}</em></div></div><div className="path-connector"><span /><ArrowDownRight size={14} /></div>
+                <div className="path-node"><span className="path-icon bug-icon"><Boxes size={15} /></span><div><small>SHARED PRODUCT ISSUE</small><b>{leadingBug ? <button type="button" className="inline-source-link" onClick={() => void openSource(leadingBug.bug_id)}>{leadingBug.bug_id}</button> : 'Bug not linked'}</b><em>{leadingBug?.bug_title ?? 'No connected bug evidence'}</em></div></div><div className="path-connector"><span /><ArrowDownRight size={14} /></div>
+                <div className="path-node owner-node"><span className="path-icon owner-icon"><UsersRound size={15} /></span><div><small>CURRENT ENGINEERING OWNER</small><b>{leadingBug?.owner_name ?? 'Not recorded'}</b><em>{leadingBug?.owner_id ? <button type="button" className="inline-source-link" onClick={() => void openSource(leadingBug.owner_id)}>{leadingBug.owner_id}</button> : ''}</em></div></div>
               </div>
             </section>
 
@@ -401,16 +430,16 @@ function App() {
               <p className="action-text">{recommended}</p>
               <div className="action-assignees"><div className="assignee"><span className="assignee-avatar violet">{leadingBug?.owner_name?.split(' ').map((part) => part[0]).join('') ?? 'EN'}</span><div><small>ENGINEERING CHECKPOINT</small><b>{leadingBug?.owner_name ?? 'Engineering owner'}</b></div></div><ArrowRight size={15} className="assignee-arrow" /><div className="assignee"><span className="assignee-avatar teal"><UserRound size={15} /></span><div><small>CUSTOMER UPDATE</small><b>Account owner</b></div></div></div>
               <div className="action-note"><ShieldAlert size={14} /> No delivery date is suggested; confirm one with engineering first.</div>
-              <button className="draft-disabled" disabled><Sparkles size={14} /> Draft customer update <span>COMING NEXT</span></button>
+              <button className="draft-disabled" onClick={() => leadingBug && void openSource(leadingBug.bug_id)} disabled={!leadingBug}><FileText size={14} /> Inspect evidence record <span>{leadingBug?.bug_id ?? 'READ ONLY'}</span></button>
             </section>
           </div>
 
           <section className="sources-panel panel">
             <div className="panel-heading"><div><div className="section-kicker">PROVENANCE</div><h2>Evidence sources</h2></div><span className="source-count">{(context?.tickets.length ?? 0) + (context?.sla_events.length ?? 0) + ledger.length} linked records</span></div>
             <div className="source-list">
-              {context?.sla_events.map((event) => <div className="source-item" key={event.id}><span className="source-type red-source"><ShieldAlert size={14} /></span><div><b>{event.contract_title || event.id}</b><small>{event.kind.replaceAll('_', ' ')} · target {formatDate(event.target_at)} · {event.contract_id}</small></div><span className="source-tag">CONTRACT + SLA</span></div>)}
-              {context?.bug_paths.slice(0, 1).map((bug) => <div className="source-item" key={bug.bug_id}><span className="source-type blue-source"><Boxes size={14} /></span><div><b>{bug.bug_id} · {bug.bug_title}</b><small>{humanize(bug.bug_status)} · Owner: {bug.owner_name}</small></div><span className="source-tag">ENGINEERING</span></div>)}
-              {ledger.map((item) => <div className="source-item" key={item.id}><span className="source-type gold-source"><FileText size={14} /></span><div><b>{item.source_id || item.id} · {item.text}</b><small>{item.evidence_excerpt || 'Promise record linked to the customer graph.'}</small></div><span className="source-tag">PROMISE EVIDENCE</span></div>)}
+              {context?.sla_events.map((event) => <div className="source-item" key={event.id}><span className="source-type red-source"><ShieldAlert size={14} /></span><div><b><button type="button" className="source-title-link" onClick={() => void openSource(event.id)}>{event.contract_title || event.id}</button></b><small>{event.kind.replaceAll('_', ' ')} · target {formatDate(event.target_at)} · <button type="button" className="inline-source-link" onClick={() => void openSource(event.contract_id)}>{event.contract_id}</button></small></div><span className="source-tag">CONTRACT + SLA</span></div>)}
+              {context?.bug_paths.slice(0, 1).map((bug) => <div className="source-item" key={bug.bug_id}><span className="source-type blue-source"><Boxes size={14} /></span><div><b><button type="button" className="source-title-link" onClick={() => void openSource(bug.bug_id)}>{bug.bug_id} · {bug.bug_title}</button></b><small>{humanize(bug.bug_status)} · Owner: {bug.owner_name}</small></div><span className="source-tag">ENGINEERING</span></div>)}
+              {ledger.map((item) => <div className="source-item" key={item.id}><span className="source-type gold-source"><FileText size={14} /></span><div><b><button type="button" className="source-title-link" onClick={() => void openSource(item.source_id || item.id)}>{item.source_id || item.id} · {item.text}</button></b><small>{item.evidence_excerpt || 'Promise record linked to the customer graph.'}</small></div><span className="source-tag">PROMISE EVIDENCE</span></div>)}
               {!loading && !context?.sla_events.length && !ledger.length && <div className="empty-state">No linked evidence returned.</div>}
             </div>
           </section>
@@ -418,6 +447,26 @@ function App() {
           <footer className="page-footer"><span><Workflow size={14} /> PromiseGraph · Graph context shapes every finding</span><span>{refreshedAt ? `Last refreshed ${refreshedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : 'Waiting for graph connection'} <button onClick={() => void loadData()} aria-label="Refresh data"><RefreshCw size={13} /></button></span></footer>
         </div>
       </main>
+      {sourceOpen && <div className="source-overlay" role="presentation" onClick={closeSource}>
+        <aside className="source-drawer" role="dialog" aria-modal="true" aria-labelledby="source-drawer-title" onClick={(event) => event.stopPropagation()}>
+          <div className="source-drawer-header"><div><div className="section-kicker">READ-ONLY SOURCE RECORD</div><h2 id="source-drawer-title">{sourceDetail?.source.id || (sourceLoading ? 'Loading source…' : 'Source detail')}</h2></div><button type="button" className="source-close" aria-label="Close source detail" onClick={closeSource}><X size={18} /></button></div>
+          {sourceLoading && <div className="source-drawer-state"><LoaderCircle className="spin" size={17} /> Loading this customer-linked record…</div>}
+          {sourceError && <div className="source-drawer-error"><AlertCircle size={15} />{sourceError}</div>}
+          {sourceDetail && <div className="source-drawer-body">
+            <div className="source-type-line"><span>{sourceDetail.source.label}</span>{sourceDetail.source.title}</div>
+            {sourceDetail.source.excerpt && <blockquote className="source-quote">“{sourceDetail.source.excerpt}”</blockquote>}
+            <div className="source-detail-grid">{Object.entries(sourceDetail.source.details).map(([key, value]) => <div className="source-detail-field" key={key}><small>{humanize(key)}</small><span>{key.endsWith('_at') && typeof value === 'string' ? formatDate(value) : String(value)}</span></div>)}</div>
+            <div className="source-edges"><div className="section-kicker">CONNECTED GRAPH PROVENANCE</div>
+              {sourceDetail.relationships.length ? sourceDetail.relationships.map((edge, index) => {
+                const adjacentId = edge.from_id === sourceDetail.source.id ? edge.to_id : edge.from_id;
+                return <div className="source-edge" key={`${edge.from_id}-${edge.type}-${edge.to_id}-${index}`}><button type="button" onClick={() => void openSource(edge.from_id)}>{edge.from_id}</button><span>—[:{edge.type}]→</span><button type="button" onClick={() => void openSource(edge.to_id)}>{edge.to_id}</button><button type="button" className="edge-open" aria-label={`Open ${adjacentId}`} onClick={() => void openSource(adjacentId)}><ArrowRight size={13} /></button></div>;
+              }) : <p className="source-drawer-state">No connected provenance edges were returned for this record.</p>}
+            </div>
+            {typeof sourceDetail.source.details.source_ref === 'string' && <div className="source-ref"><small>Source reference</small><code>{sourceDetail.source.details.source_ref}</code></div>}
+          </div>}
+          <div className="source-drawer-foot"><ShieldAlert size={13} /> Customer-scoped, read-only graph lookup. No records are modified.</div>
+        </aside>
+      </div>}
     </div>
   );
 }
