@@ -1,5 +1,6 @@
 /// <reference types="vite/client" />
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
 import {
   Activity,
   AlertCircle,
@@ -15,14 +16,17 @@ import {
   CalendarClock,
   Check,
   ChevronDown,
+  ClipboardCheck,
   CircleHelp,
   Clock3,
   FileText,
+  Download,
   GitBranch,
   Link2,
   LoaderCircle,
   RefreshCw,
   SendHorizontal,
+  Search,
   ShieldAlert,
   Sparkles,
   Target,
@@ -32,7 +36,7 @@ import {
   X,
 } from 'lucide-react';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000';
 const CUSTOMER_ID = 'CUST-BLUEPEAK';
 
 type Ticket = { id: string; summary: string; status: string; created_at: string };
@@ -80,6 +84,17 @@ type SourceDetail = {
   source: { id: string; label: string; title: string; excerpt: string | null; details: Record<string, unknown> };
   relationships: Array<{ from_id: string; type: string; to_id: string }>;
 };
+type TimelineEvent = {
+  when: string; category: 'ticket' | 'commitment' | 'sla'; title: string; detail: string;
+  sourceIds: string[]; tone: 'blue' | 'gold' | 'red';
+};
+type TimelineFilter = 'all' | TimelineEvent['category'];
+const FOLLOW_UP_ACTIONS = [
+  { id: 'confirm-bug', title: 'Confirm current BUG-77 status with engineering', owner: 'Engineering owner' },
+  { id: 'close-prom-22', title: 'Complete the overdue follow-up for PROM-22', owner: 'Account owner' },
+  { id: 'close-prom-31', title: 'Complete the overdue follow-up for PROM-31', owner: 'Support owner' },
+  { id: 'review-update', title: 'Review the customer update before using it', owner: 'Human review required' },
+];
 
 function formatDate(value?: string | null) {
   if (!value) return 'No due date recorded';
@@ -91,6 +106,54 @@ function formatDate(value?: string | null) {
 function humanize(value?: string | null) {
   if (!value) return 'Not recorded';
   return value.replaceAll('_', ' ').replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function renderInlineMarkdown(text: string, openSource: (id: string) => void): ReactNode[] {
+  const tokenPattern = /(\*\*[^*]+\*\*|`[^`]+`|\[[A-Za-z0-9_-]+\])/g;
+  return text.split(tokenPattern).filter(Boolean).map((part, index) => {
+    if (part.startsWith('**') && part.endsWith('**')) return <strong key={index}>{part.slice(2, -2)}</strong>;
+    if (part.startsWith('`') && part.endsWith('`')) return <code key={index}>{part.slice(1, -1)}</code>;
+    const citation = part.match(/^\[([A-Za-z0-9_-]+)\]$/);
+    if (citation) return <button key={index} type="button" className="markdown-citation" onClick={() => openSource(citation[1])}>{citation[1]}</button>;
+    return part;
+  });
+}
+
+function FormattedAnswer({ text, openSource }: { text: string; openSource: (id: string) => void }) {
+  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  const blocks: ReactNode[] = [];
+  let paragraph: string[] = [];
+  let list: string[] = [];
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    const content = paragraph.map((line) => renderInlineMarkdown(line, openSource)).reduce<ReactNode[]>(
+      (all, parts, index) => index ? [...all, <br key={`br-${index}`} />, ...parts] : parts,
+      [],
+    );
+    blocks.push(<p key={`p-${blocks.length}`}>{content}</p>);
+    paragraph = [];
+  };
+  const flushList = () => {
+    if (!list.length) return;
+    blocks.push(<ul key={`ul-${blocks.length}`}>{list.map((item, index) => <li key={index}>{renderInlineMarkdown(item, openSource)}</li>)}</ul>);
+    list = [];
+  };
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    const listMatch = line.match(/^(?:[-*•]|\d+[.)])\s+(.+)$/);
+    const headingMatch = line.match(/^#{1,3}\s+(.+)$/);
+    if (!line) { flushParagraph(); flushList(); continue; }
+    if (listMatch) { flushParagraph(); list.push(listMatch[1]); continue; }
+    if (headingMatch) {
+      flushParagraph(); flushList();
+      blocks.push(<h3 key={`h-${blocks.length}`}>{renderInlineMarkdown(headingMatch[1], openSource)}</h3>);
+      continue;
+    }
+    flushList();
+    paragraph.push(line);
+  }
+  flushParagraph(); flushList();
+  return <div className="formatted-answer">{blocks}</div>;
 }
 
 async function getJson<T>(path: string): Promise<T> {
@@ -157,6 +220,16 @@ function App() {
   const [sourceLoading, setSourceLoading] = useState(false);
   const [sourceError, setSourceError] = useState('');
   const [sourceOpen, setSourceOpen] = useState(false);
+  const [graphConnected, setGraphConnected] = useState(false);
+  const [timelineFilter, setTimelineFilter] = useState<TimelineFilter>('all');
+  const [timelineSearch, setTimelineSearch] = useState('');
+  const [completedActions, setCompletedActions] = useState<string[]>(() => {
+    try {
+      const saved: unknown = JSON.parse(localStorage.getItem('promisegraph:CASE-104:actions') || '[]');
+      return Array.isArray(saved) ? saved.filter((value): value is string => typeof value === 'string') : [];
+    }
+    catch { return []; }
+  });
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -168,8 +241,10 @@ function App() {
       ]);
       setContext(newContext);
       setAnalysis(newAnalysis);
+      setGraphConnected(true);
       setRefreshedAt(new Date());
     } catch (caught) {
+      setGraphConnected(false);
       setError(caught instanceof Error ? caught.message : 'Could not reach the PromiseGraph API.');
     } finally {
       setLoading(false);
@@ -177,6 +252,10 @@ function App() {
   }, []);
 
   useEffect(() => { void loadData(); }, [loadData]);
+  useEffect(() => {
+    try { localStorage.setItem('promisegraph:CASE-104:actions', JSON.stringify(completedActions)); }
+    catch { /* Checklist still works for this session when storage is unavailable. */ }
+  }, [completedActions]);
 
   async function openSource(sourceId: string) {
     setSourceOpen(true);
@@ -286,12 +365,88 @@ function App() {
     } : previous);
   }
 
+  function toggleAction(actionId: string) {
+    setCompletedActions((previous) => previous.includes(actionId)
+      ? previous.filter((id) => id !== actionId)
+      : [...previous, actionId]);
+  }
+
+  function exportCaseBrief() {
+    const customerName = context?.customer.name || 'Bluepeak Robotics';
+    const lines = [
+      `# ${customerName} — escalation handoff`,
+      '',
+      `Generated: ${new Date().toLocaleString()}`,
+      '',
+      '## Situation',
+      diagnosis,
+      '',
+      '## Current facts',
+      ...ledger.map((item) => `- ${item.text} **${humanize(item.status)}**; due ${formatDate(item.due_at)}; owner ${item.made_by || 'not recorded'} [${item.id}]${item.source_id ? ` [${item.source_id}]` : ''}. Follow-up: ${humanize(item.follow_up_status)}.`),
+      ...((context?.bug_paths ?? []).slice(0, 1).map((bug) => `- ${bug.bug_id} remains **${humanize(bug.bug_status)}**; current owner ${bug.owner_name} [${bug.bug_id}] [${bug.owner_id}].`)),
+      ...(context?.sla_events ?? []).map((event) => `- ${humanize(event.kind)} on ${event.ticket_id} at ${formatDate(event.occurred_at)}; target ${formatDate(event.target_at)} [${event.id}] [${event.contract_id}].`),
+      '',
+      '## Known uncertainty',
+      '- No source currently confirms a fix delivery date or current engineering ETA.',
+      '',
+      '## Recommended next steps',
+      '- Confirm BUG-77 status with engineering before offering a new customer date.',
+      '- Complete the overdue customer follow-ups for PROM-22 and PROM-31.',
+      '- Have a human review any customer-facing update; this app does not send it.',
+      '',
+      '## Timeline',
+      ...timeline.map((event) => `- ${formatDate(event.when)} — ${event.title}: ${event.detail} ${event.sourceIds.map((id) => `[${id}]`).join(' ')}`),
+      '',
+      '_Generated from the synthetic PromiseGraph demo. Verify current records before acting._',
+    ];
+    const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `${CUSTOMER_ID.toLowerCase()}-case-brief.md`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
   const ledger = analysis?.analysis.commitments ?? [];
   const overdueCount = analysis?.analysis.overdue_commitment_count ?? 0;
   const slaCount = context?.sla_events.length ?? 0;
   const leadingBug = context?.bug_paths[0];
   const topScore = ledger[0]?.score.value ?? 0;
   const duePromiseCount = useMemo(() => ledger.filter((item) => item.status === 'overdue').length, [ledger]);
+  const timeline = useMemo<TimelineEvent[]>(() => {
+    const events: TimelineEvent[] = [];
+    for (const ticket of context?.tickets ?? []) {
+      if (ticket.created_at) events.push({
+        when: ticket.created_at, category: 'ticket', tone: 'blue',
+        title: `Support ticket opened · ${ticket.id}`, detail: ticket.summary,
+        sourceIds: [ticket.id],
+      });
+    }
+    for (const promise of ledger) {
+      if (promise.due_at) events.push({
+        when: promise.due_at, category: 'commitment', tone: 'gold',
+        title: `${promise.status === 'overdue' ? 'Commitment became overdue' : 'Commitment due'} · ${promise.id}`,
+        detail: `${promise.text}${promise.made_by ? ` Made by ${promise.made_by}.` : ''}${promise.follow_up_status ? ` Follow-up: ${humanize(promise.follow_up_status)}.` : ''}`,
+        sourceIds: [promise.id, ...(promise.source_id ? [promise.source_id] : [])],
+      });
+    }
+    for (const event of context?.sla_events ?? []) {
+      if (event.occurred_at) events.push({
+        when: event.occurred_at, category: 'sla', tone: 'red',
+        title: `SLA event · ${humanize(event.kind)}`,
+        detail: `Target was ${formatDate(event.target_at)}. Contract: ${event.contract_title}.`,
+        sourceIds: [event.id, event.contract_id, event.ticket_id].filter(Boolean),
+      });
+    }
+    return events.filter((item) => Number.isFinite(Date.parse(item.when)))
+      .sort((a, b) => Date.parse(a.when) - Date.parse(b.when));
+  }, [context, ledger]);
+  const visibleTimeline = useMemo(() => {
+    const query = timelineSearch.trim().toLowerCase();
+    return timeline.filter((event) => (timelineFilter === 'all' || event.category === timelineFilter)
+      && (!query || `${event.title} ${event.detail} ${event.sourceIds.join(' ')}`.toLowerCase().includes(query)));
+  }, [timeline, timelineFilter, timelineSearch]);
 
   const diagnosis = context && analysis
     ? `${context.customer.name} has ${context.tickets.length} connected support tickets. ${duePromiseCount} customer-facing ${duePromiseCount === 1 ? 'commitment is' : 'commitments are'} overdue${leadingBug ? ` around ${leadingBug.bug_title.toLowerCase()}` : ''}${slaCount ? ', and the latest escalation includes an SLA breach' : ''}. The graph links these records to their owners and evidence.`
@@ -309,16 +464,17 @@ function App() {
         <button className="workspace-picker"><span className="workspace-avatar">PG</span><span className="workspace-name">Support Operations<small>Demo workspace</small></span><ChevronDown size={15} /></button>
         <div className="nav-label">INTELLIGENCE</div>
         <nav className="nav-list">
-          <a className="nav-item active"><Activity size={17} /> Escalation desk <span className="nav-count">1</span></a>
-          <a className="nav-item muted"><Boxes size={17} /> Customer graph</a>
-          <a className="nav-item muted"><BookOpenText size={17} /> Promise ledger</a>
+          <a href="#case-top" title="Escalation desk" className="nav-item active"><Activity size={17} /><span className="nav-item-label">Escalation desk</span><span className="nav-count">1</span></a>
+          <a href="#evidence-path" title="Customer graph" className="nav-item muted"><Boxes size={17} /><span className="nav-item-label">Customer graph</span></a>
+          <a href="#promise-ledger" title="Promise ledger" className="nav-item muted"><BookOpenText size={17} /><span className="nav-item-label">Promise ledger</span></a>
+          <a href="#action-checklist" title="Follow-up checklist" className="nav-item muted"><ClipboardCheck size={17} /><span className="nav-item-label">Next steps</span></a>
         </nav>
         <div className="sidebar-divider" />
         <div className="nav-label">ACTIVE CASE</div>
         <div className="case-mini"><span className="case-dot" /><span><b>CASE-104</b><small>Bluepeak Robotics</small></span></div>
         <div className="sidebar-spacer" />
         <div className="sidebar-bottom">
-          <div className="graph-status"><span className="status-pulse" /><span>Graph connected</span><span className="graph-status-label">FALKORDB</span></div>
+          <div className={`graph-status ${graphConnected ? 'connected' : 'disconnected'}`}><span className="status-pulse" /><span>{loading ? 'Checking graph…' : graphConnected ? 'Graph connected' : 'Graph unavailable'}</span><span className="graph-status-label">FALKORDB</span></div>
           <div className="profile"><span className="profile-avatar">CS</span><span><b>Chirag Sharma</b><small>Project owner</small></span><ChevronDown size={15} /></div>
         </div>
       </aside>
@@ -336,7 +492,7 @@ function App() {
         <div className="content">
           {error && <div className="error-banner"><AlertCircle size={18} /><div><b>Could not load the case graph</b><span>{error}</span><small>Check that FalkorDB and the FastAPI server are running on this PC.</small></div><button onClick={() => void loadData()} className="retry-button"><RefreshCw size={14} /> Retry</button></div>}
 
-          <section className="case-heading">
+          <section className="case-heading" id="case-top">
             <div>
               <div className="eyebrow"><span className="critical-dot" /> CRITICAL ESCALATION <span className="eyebrow-sep">/</span> OPEN CASE</div>
               <h1>Bluepeak Robotics</h1>
@@ -344,6 +500,7 @@ function App() {
             </div>
             <div className="heading-actions">
               <button className="secondary-button" onClick={() => void loadData()} disabled={loading}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh graph</button>
+              <button className="secondary-button" onClick={exportCaseBrief} disabled={!context}><Download size={15} /> Export brief</button>
               <button className="primary-button" onClick={() => void prepareDraft()} disabled={asking || loading} title="Generate an editable draft only; nothing will be sent"><Sparkles size={15} /> {asking ? 'Preparing…' : 'Prepare response'} <span className="soon-tag">DRAFT ONLY</span></button>
             </div>
           </section>
@@ -361,6 +518,25 @@ function App() {
             <div className="diagnosis-meta"><div className="confidence-label"><BadgeCheck size={15} /> SOURCE-BACKED</div><span>Based on connected records</span></div>
           </section>
 
+          <section className="timeline-panel panel" aria-label="Chronological case timeline">
+            <div className="panel-heading"><div><div className="section-kicker">CASE HISTORY · CHRONOLOGICAL</div><h2>How the escalation unfolded</h2></div><span className="source-count">{visibleTimeline.length} / {timeline.length} events</span></div>
+            <div className="timeline-controls"><label className="timeline-search"><Search size={14} /><input value={timelineSearch} onChange={(event) => setTimelineSearch(event.target.value)} aria-label="Search timeline" placeholder="Search events or record IDs" /></label><select value={timelineFilter} onChange={(event) => setTimelineFilter(event.target.value as TimelineFilter)} aria-label="Filter timeline event type"><option value="all">All event types</option><option value="ticket">Tickets</option><option value="commitment">Commitments</option><option value="sla">SLA events</option></select></div>
+            {timeline.length ? visibleTimeline.length ? <ol className="case-timeline">{visibleTimeline.map((item, index) => <li className="timeline-item" key={`${item.category}-${item.sourceIds[0]}-${item.when}-${index}`}>
+              <span className={`timeline-marker ${item.tone}`}>{item.category === 'ticket' ? <FileText size={13} /> : item.category === 'commitment' ? <Clock3 size={13} /> : <ShieldAlert size={13} />}</span>
+              <div className="timeline-content"><div className="timeline-title-row"><b>{item.title}</b><time dateTime={item.when}>{formatDate(item.when)}</time></div><p>{item.detail}</p><div className="timeline-sources">{item.sourceIds.map((id) => <button className="citation-chip source-link" type="button" key={id} onClick={() => void openSource(id)}>{id}</button>)}</div></div>
+            </li>)}</ol> : <div className="timeline-empty">No timeline events match these filters.</div> : <div className="timeline-empty">Timeline events will appear when the graph data loads.</div>}
+          </section>
+
+          <section className="action-checklist panel" id="action-checklist">
+            <div className="panel-heading"><div><div className="section-kicker">CLOSED-LOOP FOLLOW-UP</div><h2>Operator checklist</h2></div><span className="source-count">{completedActions.length} / {FOLLOW_UP_ACTIONS.length} done</span></div>
+            <p className="checklist-note">Track the safe next steps for this case. These checkmarks are saved in this browser only; they do not update FalkorDB or contact anyone.</p>
+            <div className="checklist-items">{FOLLOW_UP_ACTIONS.map((item) => {
+              const checked = completedActions.includes(item.id);
+              return <label className={`checklist-item ${checked ? 'checked' : ''}`} key={item.id}><input type="checkbox" checked={checked} onChange={() => toggleAction(item.id)} /><span className="checklist-check"><Check size={13} /></span><span className="checklist-copy"><b>{item.title}</b><small>{item.owner}</small></span></label>;
+            })}</div>
+            <div className="checklist-foot"><ShieldAlert size={13} /> Confirm current engineering status and complete customer follow-ups outside this prototype, then record the outcome in your source system.</div>
+          </section>
+
           <section className="agent-panel panel">
             <div className="panel-heading"><div><div className="section-kicker">LANGGRAPH · TOOL-CALLING INVESTIGATION</div><h2>Ask the case agent</h2></div><span className="agent-mark"><Bot size={17} /></span></div>
             <p className="agent-intro">The agent must retrieve customer context and the Promise Ledger through read-only tools before answering.</p>
@@ -368,6 +544,7 @@ function App() {
               <textarea value={question} onChange={(event) => setQuestion(event.target.value)} maxLength={500} rows={2} aria-label="Question for the case agent" placeholder="Ask about the connected case evidence…" />
               <button type="submit" disabled={asking || !question.trim()}><SendHorizontal size={14} /> {asking ? 'Investigating…' : 'Ask graph agent'}</button>
             </form>
+            <div className="prompt-suggestions"><span>TRY</span>{['Why is Bluepeak escalating?', 'What is known—and still uncertain?', 'What should the team do next?'].map((prompt) => <button type="button" key={prompt} onClick={() => setQuestion(prompt)}>{prompt}</button>)}</div>
             {agentError && <div className="agent-error"><AlertCircle size={14} />{agentError}</div>}
             {(asking || toolProgress.length > 0) && <div className="tool-trace" aria-live="polite">
               {asking && <div className="agent-loading"><LoaderCircle className="spin" size={15} /> {liveStatus || 'Investigating the case…'}</div>}
@@ -379,7 +556,7 @@ function App() {
             </div>}
             {agentResponse && <div className={`agent-answer ${agentResponse.grounded ? 'verified' : 'unverified'}`}>
               <div className="answer-heading"><span>{agentResponse.grounded ? <BadgeCheck size={15} /> : <AlertCircle size={15} />}{agentResponse.grounded ? 'EVIDENCE CHECK PASSED' : 'EVIDENCE NEEDS REVIEW'}</span><div>{agentResponse.tools_used.map((name) => <span className="tool-chip" key={name}>{name.replaceAll('_', ' ')}</span>)}</div></div>
-              <p>{agentResponse.answer}</p>
+              <FormattedAnswer text={agentResponse.answer} openSource={(id) => void openSource(id)} />
               {agentResponse.citations.length > 0 && <div className="citation-row"><span>VERIFIED SOURCES</span>{agentResponse.citations.map((id) => <button className="citation-chip source-link" type="button" key={id} onClick={() => void openSource(id)}>{id}</button>)}</div>}
               {agentResponse.unsupported_citations.length > 0 && <div className="unsupported-row">Unverified IDs: {agentResponse.unsupported_citations.join(', ')}</div>}
               <div className="answer-foot">Tool calls are read-only. Any customer-facing action still requires human review.</div>
@@ -396,7 +573,7 @@ function App() {
             {draftResult.warnings.length > 0 && <ul className="draft-warnings">{draftResult.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>}
           </section>}
 
-          <div className="section-heading"><div><div className="section-kicker">PROMISE LEDGER</div><h2>Commitments that need attention</h2></div><div className="as-of">As of {analysis ? formatDate(analysis.analysis.as_of) : '—'}</div></div>
+          <div className="section-heading" id="promise-ledger"><div><div className="section-kicker">PROMISE LEDGER</div><h2>Commitments that need attention</h2></div><div className="as-of">As of {analysis ? formatDate(analysis.analysis.as_of) : '—'}</div></div>
           <section className="ledger-list">
             {ledger.map((item, index) => (
               <article className="promise-card" key={item.id}>
@@ -415,7 +592,7 @@ function App() {
           </section>
 
           <div className="two-column">
-            <section className="panel evidence-panel">
+            <section className="panel evidence-panel" id="evidence-path">
               <div className="panel-heading"><div><div className="section-kicker">MULTI-HOP REASONING</div><h2>Connected evidence path</h2></div><GitBranch size={18} /></div>
               <div className="path-flow">
                 <div className="path-node customer-node"><span className="path-icon"><BriefcaseBusiness size={15} /></span><div><small>CUSTOMER</small><b>{context?.customer.name ?? 'Bluepeak Robotics'}</b></div></div><div className="path-connector"><span /><ArrowDownRight size={14} /></div>
@@ -430,7 +607,7 @@ function App() {
               <p className="action-text">{recommended}</p>
               <div className="action-assignees"><div className="assignee"><span className="assignee-avatar violet">{leadingBug?.owner_name?.split(' ').map((part) => part[0]).join('') ?? 'EN'}</span><div><small>ENGINEERING CHECKPOINT</small><b>{leadingBug?.owner_name ?? 'Engineering owner'}</b></div></div><ArrowRight size={15} className="assignee-arrow" /><div className="assignee"><span className="assignee-avatar teal"><UserRound size={15} /></span><div><small>CUSTOMER UPDATE</small><b>Account owner</b></div></div></div>
               <div className="action-note"><ShieldAlert size={14} /> No delivery date is suggested; confirm one with engineering first.</div>
-              <button className="draft-disabled" onClick={() => leadingBug && void openSource(leadingBug.bug_id)} disabled={!leadingBug}><FileText size={14} /> Inspect evidence record <span>{leadingBug?.bug_id ?? 'READ ONLY'}</span></button>
+              <button className="draft-disabled" onClick={() => void prepareDraft()} disabled={asking || loading}><Sparkles size={14} /> Prepare customer update <span>DRAFT ONLY</span></button>
             </section>
           </div>
 

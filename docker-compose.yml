@@ -1,0 +1,13 @@
+services:
+  falkordb:
+    image: falkordb/falkordb:latest
+    container_name: promisegraph-falkordb
+    ports:
+      - "127.0.0.1:6379:6379"
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - promisegraph-falkordb-data:/var/lib/falkordb/data
+    restart: unless-stopped
+
+volumes:
+  promisegraph-falkordb-data:

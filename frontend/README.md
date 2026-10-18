@@ -5,7 +5,7 @@ Standalone React + Vite + TypeScript case workspace. This folder is complete: it
 ## Requirements
 
 - Node.js 20.19+ or 22.12+ (Node 22 LTS recommended)
-- PromiseGraph FastAPI backend running at `http://localhost:8000`
+- PromiseGraph FastAPI backend running at `http://127.0.0.1:8000`
 - FalkorDB running for graph reads; RadoxAI model credentials configured in the backend's project-root `.env` for agent questions
 
 ## Install and run
@@ -17,11 +17,11 @@ npm install
 npm run dev
 ```
 
-Open the URL printed by Vite, usually `http://localhost:5173`.
+Open the URL printed by Vite, usually `http://127.0.0.1:5173`.
 
 ## API connection
 
-The frontend defaults to `http://localhost:8000` and uses:
+The frontend defaults to `http://127.0.0.1:8000` and uses:
 
 - `GET /api/customers/CUST-BLUEPEAK/context`
 - `GET /api/customers/CUST-BLUEPEAK/analysis`
@@ -32,7 +32,9 @@ The frontend defaults to `http://localhost:8000` and uses:
 To use another API address, create a frontend `.env.local` file with:
 
 ```dotenv
-VITE_API_BASE_URL=http://localhost:8000
+VITE_API_BASE_URL=http://127.0.0.1:8000
 ```
+
+The sidebar links jump between the case overview, evidence path, Promise Ledger, and follow-up checklist. Agent answers render common Markdown formatting safely, and validated citations can be opened in the read-only evidence inspector. The searchable, filterable case timeline combines recorded ticket creation, commitment due, and SLA event timestamps; each milestone links to its source record. Export brief downloads a case handoff snapshot.
 
 Do not put provider API keys in this frontend folder. Keep model credentials in the backend environment only.
